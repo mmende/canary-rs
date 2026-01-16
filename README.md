@@ -1,6 +1,6 @@
 # canary-rs
 
-A Rust implementation for NVIDIA's Canary-1b-v2 multilingual ASR/AST model using ONNX Runtime.
+A Rust implementation for NVIDIA's Canary multilingual ASR/AST model using ONNX Runtime.
 
 ## Usage
 

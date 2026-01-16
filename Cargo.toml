@@ -19,7 +19,6 @@ ndarray = "0.17.2"
 thiserror = "2.0"
 rubato = "1.0.0"
 audioadapter-buffers = "2.0"
-parakeet-rs = { version = "0.2.9", optional = true }
 rustfft = "6.2"
 log = "0.4"
 
