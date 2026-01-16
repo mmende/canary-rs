@@ -1,7 +1,6 @@
 use canary_rs::{Canary, ExecutionConfig, ExecutionProvider, StreamConfig};
 use cpal::Sample;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -34,7 +33,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stream_cfg = StreamConfig::new()
         .with_window_duration(8.0)
         .with_step_duration(0.5)
-        .with_emit_partial(true);
+        .with_emit_partial(true)
+        .with_pad_partial(false)
+        .with_stability_window(3);
     let mut stream_state =
         model.stream(source_lang.clone(), target_lang.clone(), stream_cfg.clone())?;
     let mut full_session = model.session();
@@ -114,7 +115,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut final_line = String::new();
     let mut silence_samples = 0usize;
     let mut noise_floor = 0.0_f32;
-    let mut recent_texts: VecDeque<String> = VecDeque::new();
     let mut utterance_audio: Vec<f32> = Vec::new();
     let mut in_utterance = false;
     while !stop.load(Ordering::SeqCst) {
@@ -159,7 +159,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                             stream_state.reset();
                             final_line.clear();
-                            recent_texts.clear();
                             utterance_audio.clear();
                             silence_samples = 0;
                             in_utterance = false;
@@ -173,48 +172,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let results = stream_state.push_samples(&chunk, sample_rate, channels)?;
                 for result in results {
-                    let text = result.result.text.trim();
-                    if !text.is_empty() {
-                        recent_texts.push_back(text.to_string());
-                        if recent_texts.len() > 3 {
-                            recent_texts.pop_front();
-                        }
+                    let delta = result.delta_text.trim();
+                    if delta.is_empty() {
+                        continue;
+                    }
 
-                        let mut committed_updated = false;
-                        if recent_texts.len() == 3 {
-                            if let Some(stable_text) = stable_prefix_text(&recent_texts) {
-                                committed_updated =
-                                    append_stable_words(&mut final_line, &stable_text);
-                            }
-                        }
+                    append_with_space(&mut final_line, delta);
 
-                        let current = strip_committed_prefix(&final_line, text);
-                        let mut display_text = if final_line.is_empty() {
-                            current.clone()
-                        } else if current.is_empty() {
-                            final_line.clone()
-                        } else {
-                            format!("{} {}", final_line, current)
-                        };
+                    let mut line_break = false;
+                    if ends_with_sentence_punct(&final_line) {
+                        line_break = true;
+                    }
 
-                        let mut line_break = false;
-                        if committed_updated && ends_with_sentence_punct(&final_line) {
-                            display_text = final_line.clone();
-                            line_break = true;
-                        }
+                    if !final_line.is_empty() && has_alnum(&final_line) {
+                        last_len = last_len.max(final_line.len());
+                        print!("\r{:<width$}", final_line, width = last_len);
+                        let _ = std::io::stdout().flush();
+                    }
 
-                        if !display_text.is_empty() && has_alnum(&display_text) {
-                            last_len = last_len.max(display_text.len());
-                            print!("\r{:<width$}", display_text, width = last_len);
-                            let _ = std::io::stdout().flush();
-                        }
-
-                        if line_break {
-                            println!();
-                            last_len = 0;
-                            final_line.clear();
-                            recent_texts.clear();
-                        }
+                    if line_break {
+                        println!();
+                        last_len = 0;
+                        final_line.clear();
                     }
                 }
             }
@@ -266,89 +245,19 @@ fn has_alnum(text: &str) -> bool {
     text.chars().any(|ch| ch.is_alphanumeric())
 }
 
-fn stable_prefix_text(texts: &VecDeque<String>) -> Option<String> {
-    let mut word_lists: Vec<Vec<&str>> = Vec::with_capacity(texts.len());
-    for text in texts {
-        word_lists.push(text.split_whitespace().collect());
+fn append_with_space(line: &mut String, chunk: &str) {
+    if chunk.is_empty() {
+        return;
     }
-    if word_lists.is_empty() {
-        return None;
+    let needs_space = !line.is_empty() && !starts_with_punct(chunk);
+    if needs_space {
+        line.push(' ');
     }
-
-    let min_len = word_lists
-        .iter()
-        .map(|words| words.len())
-        .min()
-        .unwrap_or(0);
-    if min_len == 0 {
-        return None;
-    }
-
-    let mut stable_words: Vec<&str> = Vec::new();
-    'outer: for idx in 0..min_len {
-        let word = word_lists[0][idx];
-        for list in &word_lists[1..] {
-            if list[idx] != word {
-                break 'outer;
-            }
-        }
-        stable_words.push(word);
-    }
-
-    if stable_words.is_empty() {
-        None
-    } else {
-        Some(stable_words.join(" "))
-    }
+    line.push_str(chunk);
 }
 
-fn append_stable_words(final_line: &mut String, stable_text: &str) -> bool {
-    let stable_words: Vec<&str> = stable_text.split_whitespace().collect();
-    if stable_words.is_empty() {
-        return false;
-    }
-
-    let final_words: Vec<&str> = final_line.split_whitespace().collect();
-    if is_prefix_words(&final_words, &stable_words) {
-        return false;
-    }
-
-    let overlap = suffix_prefix_overlap(&final_words, &stable_words);
-    let new_words = &stable_words[overlap..];
-    if new_words.is_empty() {
-        return false;
-    }
-
-    if !final_line.is_empty() {
-        final_line.push(' ');
-    }
-    final_line.push_str(&new_words.join(" "));
-    true
-}
-
-fn strip_committed_prefix(final_line: &str, text: &str) -> String {
-    let text_words: Vec<&str> = text.split_whitespace().collect();
-    if text_words.is_empty() {
-        return String::new();
-    }
-    let final_words: Vec<&str> = final_line.split_whitespace().collect();
-    let overlap = suffix_prefix_overlap(&final_words, &text_words);
-    text_words[overlap..].join(" ")
-}
-
-fn suffix_prefix_overlap(a: &[&str], b: &[&str]) -> usize {
-    let max_len = a.len().min(b.len());
-    for len in (1..=max_len).rev() {
-        if a[a.len() - len..] == b[..len] {
-            return len;
-        }
-    }
-    0
-}
-
-fn is_prefix_words(haystack: &[&str], needle: &[&str]) -> bool {
-    if needle.len() > haystack.len() {
-        return false;
-    }
-    haystack[..needle.len()] == needle[..]
+fn starts_with_punct(text: &str) -> bool {
+    text.chars()
+        .next()
+        .map_or(false, |ch| matches!(ch, '.' | ',' | '!' | '?' | ';' | ':'))
 }
