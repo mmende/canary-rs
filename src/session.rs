@@ -41,6 +41,12 @@ impl CanarySession {
             .map_err(|_| CanaryError::InferenceError("Decoder session mutex poisoned".into()))
     }
 
+    /// Clear cached encoder outputs for a new utterance.
+    pub fn reset(&mut self) {
+        self.encoder_mask = None;
+        self.encoder_mask_shape = None;
+    }
+
     /// Transcribe an audio file
     ///
     /// # Arguments
@@ -73,8 +79,7 @@ impl CanarySession {
         source_lang: &str,
         target_lang: &str,
     ) -> Result<CanaryResult> {
-        self.encoder_mask = None;
-        self.encoder_mask_shape = None;
+        self.reset();
 
         // Convert to mono if needed
         let mono_audio = if channels > 1 {

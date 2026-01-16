@@ -2,10 +2,12 @@ mod audio;
 mod execution;
 mod model;
 mod session;
+mod stream;
 mod types;
 
 pub use model::{Canary, ExecutionConfig, ExecutionProvider, SessionConfig};
 pub use session::CanarySession;
+pub use stream::{CanaryStream, StreamChunk, StreamConfig};
 pub use types::{CanaryError, CanaryResult, Result, Token};
 
 #[cfg(test)]

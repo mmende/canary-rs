@@ -23,7 +23,7 @@ Alternative checkpoints/models:
 - [canary-180m-flash](https://huggingface.co/istupakov/canary-180m-flash-onnx/tree/main).
 
 ```rust
-use canary_rs::Canary;
+use canary_rs::{Canary, StreamConfig};
 
 let model = Canary::from_pretrained("canary-1b-v2", None)?;
 let mut session = model.session();
@@ -36,10 +36,12 @@ println!("Transcription: {}", result.text);
 for token in result.tokens {
     println!("Token: {} ({} - {})", token.text, token.start, token.end);
 }
-```
 
-If you are using a different Canary checkpoint and the decoder dimensions cannot be inferred,
-set them explicitly via `SessionConfig::with_decoder_dims`.
+// Windowed streaming helper for live audio.
+let stream_cfg = StreamConfig::new().with_window_duration(10.0).with_step_duration(2.0);
+let mut stream = model.stream("en", "en", stream_cfg)?;
+// stream.push_samples(&audio_chunk, sample_rate, channels)?;
+```
 
 ## Features
 

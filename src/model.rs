@@ -1,5 +1,6 @@
 use crate::execution;
 use crate::session::CanarySession;
+use crate::stream::{CanaryStream, StreamConfig};
 use crate::types::{CanaryError, CanaryResult, Result};
 use ort::logging::LogLevel;
 use ort::session::{Session, builder::GraphOptimizationLevel};
@@ -234,6 +235,21 @@ impl Canary {
     /// Create a new session with isolated per-run state.
     pub fn session(&self) -> CanarySession {
         CanarySession::new(self.clone())
+    }
+
+    /// Create a streaming helper that returns windowed transcription results.
+    pub fn stream(
+        &self,
+        source_lang: impl Into<String>,
+        target_lang: impl Into<String>,
+        config: StreamConfig,
+    ) -> Result<CanaryStream> {
+        CanaryStream::new(
+            self.clone(),
+            source_lang.into(),
+            target_lang.into(),
+            config,
+        )
     }
 
     /// Transcribe an audio file using a fresh session.
