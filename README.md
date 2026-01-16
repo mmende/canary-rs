@@ -21,7 +21,6 @@ and place them in a directory, e.g., `canary-1b-v2`.
 
 Alternative checkpoints/models:
 - [canary-180m-flash](https://huggingface.co/istupakov/canary-180m-flash-onnx/tree/main).
-- [canary-1b-flash](https://huggingface.co/istupakov/canary-1b-flash-onnx/tree/main).
 
 ```rust
 use canary_rs::Canary;
