@@ -1,0 +1,5 @@
+/target
+canary-1*
+.DS_Store
+*.wav
+*.raw
