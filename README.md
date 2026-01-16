@@ -60,6 +60,7 @@ MIT License. See [LICENSE.md](LICENSE.md) for details.
 
 ## Acknowledgments
 
-- NVIDIA for Canary-1b-v2
-- `ort` crate maintainers
-- `parakeet-rs` for API inspiration
+- NVIDIA for the Canary models
+- [ort](https://github.com/pykeio/ort) crate maintainers
+- [parakeet-rs](https://github.com/altunenes/parakeet-rs) for API inspiration
+- [ONNX exports by istupakov](https://huggingface.co/istupakov)
