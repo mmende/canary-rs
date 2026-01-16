@@ -2,7 +2,7 @@
 name = "canary-rs"
 version = "0.1.0"
 edition = "2024"
-description = "Rust implementation of NVIDIA Canary-1b-v2 ASR/AST using ONNX Runtime"
+description = "Rust implementation of NVIDIA Canary ASR/AST using ONNX Runtime"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/mmende/canary-rs"

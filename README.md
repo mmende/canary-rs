@@ -4,7 +4,7 @@ A Rust implementation for NVIDIA's Canary multilingual ASR/AST model using ONNX 
 
 ## Usage
 
-Download from [HuggingFace](https://huggingface.co/istupakov/canary-1b-v2-onnx/tree/main):
+Download **Canary-1b-v2** from [HuggingFace](https://huggingface.co/istupakov/canary-1b-v2-onnx/tree/main):
 
 - `encoder-model.onnx`
 - `encoder-model.onnx.data`
