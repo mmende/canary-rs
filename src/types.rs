@@ -26,6 +26,8 @@ pub struct Token {
     pub text: String,
     pub start: f32,
     pub end: f32,
+    /// Token probability (0..1).
+    pub prob: f32,
 }
 
 /// Transcription result

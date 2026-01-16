@@ -22,7 +22,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Token-level Timestamps ===");
     for token in result.tokens.iter().take(20) {
         // Show first 20 tokens
-        println!("[{:.3}s - {:.3}s] {}", token.start, token.end, token.text);
+        println!(
+            "[{:.3}s - {:.3}s] {} (prob: {:.3})",
+            token.start, token.end, token.text, token.prob
+        );
     }
 
     if result.tokens.len() > 20 {

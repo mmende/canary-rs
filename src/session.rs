@@ -102,10 +102,10 @@ impl CanarySession {
         let encoded = self.run_encoder(&features)?;
 
         // Run decoder
-        let token_ids = self.run_decoder(&encoded, source_lang, target_lang)?;
+        let token_results = self.run_decoder(&encoded, source_lang, target_lang)?;
 
         // Decode tokens to text
-        let result = self.decode_tokens(&token_ids)?;
+        let result = self.decode_tokens(&token_results)?;
 
         Ok(result)
     }
@@ -166,7 +166,7 @@ impl CanarySession {
         encoded: &Array3<f32>,
         source_lang: &str,
         target_lang: &str,
-    ) -> Result<Vec<usize>> {
+    ) -> Result<Vec<(usize, f32)>> {
         let max_length = 512;
         let session_cfg = &self.model.config.session;
         let preallocate_outputs = session_cfg.preallocate_outputs;
@@ -417,7 +417,7 @@ impl CanarySession {
             a.total_cmp(&b)
         }
 
-        let mut generated: Vec<usize> = Vec::new();
+        let mut generated: Vec<(usize, f32)> = Vec::new();
 
         let mut cache_len: usize = 0;
         let mut decoder = self.lock_decoder()?;
@@ -511,18 +511,25 @@ impl CanarySession {
 
         // Step 3: Autoregressive generation (incremental, one token at a time)
         for _step in 0..max_length {
-            let next_token = last_logits
+            let (max_idx, max_val) = last_logits
                 .iter()
                 .enumerate()
                 .max_by(|(_, a), (_, b)| cmp_logits(a, b))
-                .map(|(idx, _)| idx)
-                .unwrap_or(eos_id);
+                .unwrap_or((eos_id, &f32::NEG_INFINITY));
+
+            let next_token = max_idx;
 
             if next_token == eos_id {
                 break;
             }
 
-            generated.push(next_token);
+            let prob = {
+                let max_logit = *max_val;
+                let sum_exp: f32 = last_logits.iter().map(|&x| (x - max_logit).exp()).sum();
+                1.0 / sum_exp
+            };
+
+            generated.push((next_token, prob));
 
             let input_ids_i64 = vec![next_token as i64];
             let tokens_tensor = Tensor::<i64>::from_array(([1, 1], input_ids_i64))?;
@@ -586,13 +593,13 @@ impl CanarySession {
         Ok(generated)
     }
 
-    fn decode_tokens(&self, token_ids: &[usize]) -> Result<CanaryResult> {
+    fn decode_tokens(&self, token_results: &[(usize, f32)]) -> Result<CanaryResult> {
         let mut text = String::new();
         let mut result_tokens = Vec::new();
         let spm_space = "\u{2581}";
         let use_sentencepiece = self.model.vocab.iter().any(|tok| tok.contains(spm_space));
 
-        for (i, &token_id) in token_ids.iter().enumerate() {
+        for (i, &(token_id, prob)) in token_results.iter().enumerate() {
             if token_id >= self.model.vocab.len() {
                 continue;
             }
@@ -641,6 +648,7 @@ impl CanarySession {
                 text: cleaned.trim_start().to_string(),
                 start: i as f32 * 0.02,
                 end: (i + 1) as f32 * 0.02,
+                prob,
             });
         }
 

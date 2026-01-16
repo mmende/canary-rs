@@ -34,7 +34,8 @@ println!("Transcription: {}", result.text);
 // let result = session.transcribe_samples(&audio_samples, sample_rate, channels, "en", "en")?;
 
 for token in result.tokens {
-    println!("Token: {} ({} - {})", token.text, token.start, token.end);
+    // Note: Timestamps are dummy values for now.
+    println!("Token: {} ({} - {}) (prob: {:.3})", token.text, token.start, token.end, token.prob);
 }
 
 // Windowed streaming helper for live audio.
@@ -53,6 +54,10 @@ let mut stream = model.stream("en", "en", stream_cfg)?;
 
 This crate uses the `log` crate for warnings and diagnostic messages. Configure a logger in
 your binary (for example, `env_logger` or `tracing-subscriber`) to see output.
+
+## Notes
+
+Timestamps aren't working right now and are just dummy values because Canary doesn't emit timestamp tokens from the decoder. In the original NeMo implementation, timestamps are generated in a separate post-decode step using forced alignment with an auxiliary CTC model.
 
 ## License
 
