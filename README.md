@@ -4,10 +4,10 @@ A Rust implementation for NVIDIA's Canary multilingual ASR/AST model using ONNX 
 
 ## Usage
 
-Download **Canary-1b-v2** from [HuggingFace](https://huggingface.co/istupakov/canary-1b-v2-onnx/tree/main):
+Download [Canary-1b-v2](https://huggingface.co/istupakov/canary-1b-v2-onnx/tree/main) or [Canary-180m-flash](https://huggingface.co/istupakov/canary-180m-flash-onnx/tree/main) model files from HuggingFace:
 
 - `encoder-model.onnx`
-- `encoder-model.onnx.data`
+- `encoder-model.onnx.data` (Canary-1b-v2 only)
 - `decoder-model.onnx`
 - `vocab.txt`
 
@@ -18,9 +18,6 @@ or for int8 quantization:
 - `vocab.txt`
 
 and place them in a directory, e.g., `canary-1b-v2`.
-
-Alternative checkpoints/models:
-- [canary-180m-flash](https://huggingface.co/istupakov/canary-180m-flash-onnx/tree/main).
 
 ```rust
 use canary_rs::{Canary, StreamConfig};
