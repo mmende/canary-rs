@@ -46,7 +46,7 @@ let mut stream = model.stream("en", "en", stream_cfg)?;
 ## Features
 
 - `ort-defaults` (default): Enable ONNX Runtime default features.
-- Execution providers (🚧 Untested): `cuda`, `tensorrt`, `coreml`, `directml`, `rocm`, `openvino`, `webgpu`, `nnapi`.
+- Execution providers (🚧 Mostly untested): `cuda`, `tensorrt`, `coreml`, `directml`, `rocm`, `openvino`, `webgpu`, `nnapi`.
 - Dynamic loading: `load-dynamic`, `preload-dylibs` (see `ort` docs).
 
 ## Logging
