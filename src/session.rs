@@ -231,15 +231,6 @@ impl CanarySession {
         let default_prompt_tokens = {
             let mut tokens = vec![bos_id];
 
-            if let Some(&id) = self.model.token_to_id.get(&target_lang_token) {
-                tokens.push(id);
-            } else {
-                log::warn!(
-                    "Target language token '{}' not found in vocabulary",
-                    target_lang_token
-                );
-            }
-
             if let Some(&id) = self.model.token_to_id.get(&source_lang_token) {
                 tokens.push(id);
             } else {
@@ -249,16 +240,26 @@ impl CanarySession {
                 );
             }
 
+            if let Some(&id) = self.model.token_to_id.get(&target_lang_token) {
+                tokens.push(id);
+            } else {
+                log::warn!(
+                    "Target language token '{}' not found in vocabulary",
+                    target_lang_token
+                );
+            }
+
             let use_pnc = session_cfg.use_pnc;
             let pnc_token = if use_pnc { "<|pnc|>" } else { "<|nopnc|>" };
             if let Some(&id) = self.model.token_to_id.get(pnc_token) {
                 tokens.push(id);
             }
 
-            let use_itn = session_cfg.use_itn;
-            let itn_token = if use_itn { "<|itn|>" } else { "<|noitn|>" };
-            if let Some(&id) = self.model.token_to_id.get(itn_token) {
-                tokens.push(id);
+            if let Some(use_itn) = session_cfg.use_itn {
+                let itn_token = if use_itn { "<|itn|>" } else { "<|noitn|>" };
+                if let Some(&id) = self.model.token_to_id.get(itn_token) {
+                    tokens.push(id);
+                }
             }
 
             let use_ts = session_cfg.use_timestamps;
@@ -371,29 +372,10 @@ impl CanarySession {
             Ok(logits_data[last_logits_start..last_logits_start + v].to_vec())
         }
 
-        fn extract_decoder_mems(
-            outputs: &SessionOutputs<'_>,
-            num_layers: usize,
-            hidden: usize,
-        ) -> Result<DynValue> {
-            let hidden_states = outputs.get("decoder_hidden_states").ok_or_else(|| {
+        fn extract_decoder_mems(outputs: &mut SessionOutputs<'_>) -> Result<DynValue> {
+            outputs.remove("decoder_hidden_states").ok_or_else(|| {
                 CanaryError::InferenceError("Missing decoder_hidden_states output".into())
-            })?;
-            let (shape, data) = hidden_states.try_extract_tensor::<f32>()?;
-            let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-            if dims.len() != 4 {
-                return Err(CanaryError::InferenceError(format!(
-                    "Expected decoder_hidden_states [L, B, T, H], got {:?}",
-                    dims
-                )));
-            }
-            if dims[0] != num_layers || dims[3] != hidden {
-                return Err(CanaryError::InferenceError(format!(
-                    "Unexpected decoder_hidden_states shape {:?} (expected layers={}, hidden={})",
-                    dims, num_layers, hidden
-                )));
-            }
-            Ok(Tensor::<f32>::from_array((dims.as_slice(), data.to_vec()))?.into())
+            })
         }
 
         fn empty_mems_tensor(
@@ -478,7 +460,7 @@ impl CanarySession {
                 }
                 let run_options = RunOptions::new()?.with_outputs(output_selector);
                 let empty_mems = empty_mems_tensor(decoder.allocator(), num_layers, hidden)?;
-                let outputs = decoder.run_with_options(
+                let mut outputs = decoder.run_with_options(
                     ort::inputs![
                         "input_ids" => prompt_tokens_tensor,
                         "encoder_embeddings" => &encoded_tensor,
@@ -488,18 +470,18 @@ impl CanarySession {
                     &run_options,
                 )?;
                 let last_logits = extract_last_logits(&outputs)?;
-                let decoder_mems = extract_decoder_mems(&outputs, num_layers, hidden)?;
+                let decoder_mems = extract_decoder_mems(&mut outputs)?;
                 (last_logits, decoder_mems)
             } else {
                 let empty_mems = empty_mems_tensor(decoder.allocator(), num_layers, hidden)?;
-                let outputs = decoder.run(ort::inputs![
+                let mut outputs = decoder.run(ort::inputs![
                     "input_ids" => prompt_tokens_tensor,
                     "encoder_embeddings" => &encoded_tensor,
                     "encoder_mask" => &mask_tensor,
                     "decoder_mems" => empty_mems,
                 ])?;
                 let last_logits = extract_last_logits(&outputs)?;
-                let decoder_mems = extract_decoder_mems(&outputs, num_layers, hidden)?;
+                let decoder_mems = extract_decoder_mems(&mut outputs)?;
                 (last_logits, decoder_mems)
             };
 
@@ -559,7 +541,7 @@ impl CanarySession {
                     output_selector = output_selector.preallocate("logits", logits_prealloc);
                 }
                 let run_options = RunOptions::new()?.with_outputs(output_selector);
-                let outputs = decoder.run_with_options(
+                let mut outputs = decoder.run_with_options(
                     ort::inputs![
                         "input_ids" => tokens_tensor,
                         "encoder_embeddings" => &encoded_tensor,
@@ -569,17 +551,17 @@ impl CanarySession {
                     &run_options,
                 )?;
                 let last_logits = extract_last_logits(&outputs)?;
-                let decoder_mems = extract_decoder_mems(&outputs, num_layers, hidden)?;
+                let decoder_mems = extract_decoder_mems(&mut outputs)?;
                 (last_logits, decoder_mems)
             } else {
-                let outputs = decoder.run(ort::inputs![
+                let mut outputs = decoder.run(ort::inputs![
                     "input_ids" => tokens_tensor,
                     "encoder_embeddings" => &encoded_tensor,
                     "encoder_mask" => &mask_tensor,
                     "decoder_mems" => mems_to_use,
                 ])?;
                 let last_logits = extract_last_logits(&outputs)?;
-                let decoder_mems = extract_decoder_mems(&outputs, num_layers, hidden)?;
+                let decoder_mems = extract_decoder_mems(&mut outputs)?;
                 (last_logits, decoder_mems)
             };
 

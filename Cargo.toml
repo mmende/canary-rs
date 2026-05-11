@@ -25,6 +25,22 @@ log = "0.4"
 [dev-dependencies]
 cpal = "0.17.3"
 
+[[example]]
+name = "live"
+path = "examples/live.rs"
+
+[[example]]
+name = "transcribe"
+path = "examples/transcribe.rs"
+
+[[example]]
+name = "inspect_model"
+path = "examples/inspect_model.rs"
+
+[[example]]
+name = "decoder_smoke"
+path = "examples/decoder_smoke.rs"
+
 [features]
 default = ["cpu", "ort-defaults"]
 cpu = []

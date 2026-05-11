@@ -20,11 +20,11 @@ fn execution_providers(config: &ExecutionConfig) -> Result<Vec<ExecutionProvider
             providers.push(cpu_provider());
         }
         ExecutionProvider::Cuda => {
-            providers.push(cuda_provider()?);
+            providers.push(cuda_provider(config.cuda_device_id)?);
             providers.push(cpu_provider());
         }
         ExecutionProvider::TensorRT => {
-            providers.push(tensorrt_provider()?);
+            providers.push(tensorrt_provider(config.cuda_device_id)?);
             providers.push(cpu_provider());
         }
         ExecutionProvider::CoreML => {
@@ -68,26 +68,28 @@ fn cpu_provider() -> ExecutionProviderDispatch {
     ort::ep::CPU::default().build()
 }
 
-fn cuda_provider() -> Result<ExecutionProviderDispatch> {
+fn cuda_provider(device_id: i32) -> Result<ExecutionProviderDispatch> {
     #[cfg(feature = "cuda")]
     {
-        Ok(ort::ep::CUDA::default().build())
+        Ok(ort::ep::CUDA::default().with_device_id(device_id).build())
     }
     #[cfg(not(feature = "cuda"))]
     {
+        let _ = device_id;
         Err(CanaryError::ModelError(
             "CUDA execution provider not enabled; build with feature \"cuda\"".into(),
         ))
     }
 }
 
-fn tensorrt_provider() -> Result<ExecutionProviderDispatch> {
+fn tensorrt_provider(device_id: i32) -> Result<ExecutionProviderDispatch> {
     #[cfg(feature = "tensorrt")]
     {
-        Ok(ort::ep::TensorRT::default().build())
+        Ok(ort::ep::TensorRT::default().with_device_id(device_id).build())
     }
     #[cfg(not(feature = "tensorrt"))]
     {
+        let _ = device_id;
         Err(CanaryError::ModelError(
             "TensorRT execution provider not enabled; build with feature \"tensorrt\"".into(),
         ))

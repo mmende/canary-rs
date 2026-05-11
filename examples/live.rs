@@ -1,7 +1,7 @@
-use canary_rs::{
-    Canary, /* CoreMLComputeUnits, CoreMLSpecializationStrategy, */ ExecutionConfig,
-    ExecutionProvider, StreamConfig,
-};
+#[path = "shared/utils.rs"]
+mod utils;
+
+use canary_rs::{Canary, StreamConfig};
 use cpal::Sample;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::io::Write;
@@ -31,15 +31,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Loading Canary model...");
 
-    let config = ExecutionConfig::new().with_execution_provider(ExecutionProvider::Cpu);
-    /* let config = ExecutionConfig::new()
-    .with_execution_provider(ExecutionProvider::CoreML)
-    .with_coreml_compute_units(CoreMLComputeUnits::CPUAndNeuralEngine)
-    // .with_coreml_model_format(CoreMLModelFormat::MLProgram)
-    .with_coreml_low_precision(true)
-    .with_coreml_specialization_strategy(CoreMLSpecializationStrategy::FastPrediction); */
-
-    let model = Canary::from_pretrained("canary-180m-flash", Some(config))?;
+    let config = utils::execution_config_from_env();
+    let model_dir =
+        std::env::var("CANARY_MODEL_DIR").unwrap_or_else(|_| "canary-180m-flash".to_string());
+    let model = Canary::from_pretrained(&model_dir, Some(config))?;
     let stream_cfg = StreamConfig::new()
         .with_window_duration(8.0)
         .with_step_duration(0.5)

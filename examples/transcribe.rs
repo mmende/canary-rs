@@ -1,19 +1,23 @@
-use canary_rs::{Canary, ExecutionConfig, ExecutionProvider};
+#[path = "shared/utils.rs"]
+mod utils;
+
+use canary_rs::Canary;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading Canary model...");
 
-    // Load the model with CPU execution provider
-    let config = ExecutionConfig::new().with_execution_provider(ExecutionProvider::Cpu);
+    let config = utils::execution_config_from_env();
 
-    let model = Canary::from_pretrained("canary-1b-v2", Some(config))?;
+    let model_dir =
+        std::env::var("CANARY_MODEL_DIR").unwrap_or_else(|_| "canary-180m-flash".to_string());
+    let model = Canary::from_pretrained(&model_dir, Some(config))?;
     let mut session = model.session();
 
     println!("Model loaded successfully!");
 
     // Transcribe the test audio file
     // The audio is in English, transcribe to English
-    println!("Transcribing src/loading.raw (English)...");
+    println!("Transcribing src/audio.wav (English)...");
     let result = session.transcribe_file("audio.wav", "en", "en")?;
 
     println!("\n=== Transcription Result ===");
