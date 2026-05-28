@@ -1,6 +1,8 @@
 use crate::audio;
 use crate::model::Canary;
-use crate::types::{CanaryError, CanaryResult, Result, Token};
+use crate::types::{
+    BeamLogitsProcessor, CanaryError, CanaryResult, LogitsProcessor, Result, Token,
+};
 use ndarray::Array3;
 use ort::session::{OutputSelector, RunOptions, Session, SessionOutputs};
 use ort::value::{DynTensor, DynValue, Shape, Tensor, TensorElementType, ValueType};
@@ -100,12 +102,113 @@ impl CanarySession {
         let encoded = self.run_encoder(&features)?;
 
         // Run decoder
-        let token_results = self.run_decoder(&encoded, source_lang, target_lang)?;
+        let token_results = self.run_decoder(&encoded, source_lang, target_lang, None)?;
 
         // Decode tokens to text
         let result = self.decode_tokens(&token_results)?;
 
         Ok(result)
+    }
+
+    /// Transcribe in-memory audio samples with a [`LogitsProcessor`] applied before each argmax.
+    pub fn transcribe_samples_with_processor<P: LogitsProcessor>(
+        &mut self,
+        audio: &[f32],
+        sample_rate: usize,
+        channels: usize,
+        source_lang: &str,
+        target_lang: &str,
+        processor: &mut P,
+    ) -> Result<CanaryResult> {
+        self.reset();
+        let mono_audio = if channels > 1 {
+            audio::to_mono(audio, channels)
+        } else {
+            audio.to_vec()
+        };
+        let resampled_audio = if sample_rate != self.model.sample_rate {
+            audio::resample(&mono_audio, sample_rate, self.model.sample_rate)?
+        } else {
+            mono_audio
+        };
+        let features = audio::extract_features(&resampled_audio, self.model.sample_rate)?;
+        let encoded = self.run_encoder(&features)?;
+        let token_results =
+            self.run_decoder(&encoded, source_lang, target_lang, Some(processor))?;
+        self.decode_tokens(&token_results)
+    }
+
+    /// Transcribe an audio file with a [`LogitsProcessor`] applied before each argmax.
+    pub fn transcribe_file_with_processor<P: LogitsProcessor, Q: AsRef<Path>>(
+        &mut self,
+        path: Q,
+        source_lang: &str,
+        target_lang: &str,
+        processor: &mut P,
+    ) -> Result<CanaryResult> {
+        let (audio, sample_rate, channels) = audio::load_audio_file(path)?;
+        self.transcribe_samples_with_processor(
+            &audio,
+            sample_rate,
+            channels,
+            source_lang,
+            target_lang,
+            processor,
+        )
+    }
+
+    /// Transcribe an audio file using beam search with a [`BeamLogitsProcessor`].
+    ///
+    /// `beam_width` controls how many hypotheses are tracked simultaneously.
+    /// Width 1 degenerates to greedy search.  Values of 3–5 give the best
+    /// accuracy-vs-latency trade-off for grammar-constrained decoding.
+    pub fn transcribe_file_with_beam_processor<P: BeamLogitsProcessor, Q: AsRef<Path>>(
+        &mut self,
+        path: Q,
+        source_lang: &str,
+        target_lang: &str,
+        processor: &P,
+        beam_width: usize,
+    ) -> Result<CanaryResult> {
+        let (audio, sample_rate, channels) = audio::load_audio_file(path)?;
+        self.transcribe_samples_with_beam_processor(
+            &audio,
+            sample_rate,
+            channels,
+            source_lang,
+            target_lang,
+            processor,
+            beam_width,
+        )
+    }
+
+    /// Transcribe in-memory audio samples using beam search with a [`BeamLogitsProcessor`].
+    pub fn transcribe_samples_with_beam_processor<P: BeamLogitsProcessor>(
+        &mut self,
+        audio: &[f32],
+        sample_rate: usize,
+        channels: usize,
+        source_lang: &str,
+        target_lang: &str,
+        processor: &P,
+        beam_width: usize,
+    ) -> Result<CanaryResult> {
+        self.reset();
+        let mono = if channels > 1 {
+            audio::to_mono(audio, channels)
+        } else {
+            audio.to_vec()
+        };
+        let resampled = if sample_rate != self.model.sample_rate {
+            audio::resample(&mono, sample_rate, self.model.sample_rate)?
+        } else {
+            mono
+        };
+        let features = audio::extract_features(&resampled, self.model.sample_rate)?;
+        let encoded = self.run_encoder(&features)?;
+        let tokens =
+            self.run_decoder_beam(&encoded, source_lang, target_lang, processor, beam_width)?;
+        self.decode_tokens(&tokens)
     }
 
     fn run_encoder(&mut self, features: &Array3<f32>) -> Result<Array3<f32>> {
@@ -164,6 +267,7 @@ impl CanarySession {
         encoded: &Array3<f32>,
         source_lang: &str,
         target_lang: &str,
+        mut processor: Option<&mut dyn LogitsProcessor>,
     ) -> Result<Vec<(usize, f32)>> {
         let max_length = 512;
         let session_cfg = &self.model.config.session;
@@ -490,7 +594,12 @@ impl CanarySession {
         };
 
         // Step 3: Autoregressive generation (incremental, one token at a time)
+        let mut tokens_so_far: Vec<usize> = Vec::new();
         for _step in 0..max_length {
+            if let Some(ref mut p) = processor {
+                p.process(&mut last_logits, &tokens_so_far);
+            }
+
             let (max_idx, max_val) = last_logits
                 .iter()
                 .enumerate()
@@ -510,6 +619,7 @@ impl CanarySession {
             };
 
             generated.push((next_token, prob));
+            tokens_so_far.push(next_token);
 
             let input_ids_i64 = vec![next_token as i64];
             let tokens_tensor = Tensor::<i64>::from_array(([1, 1], input_ids_i64))?;
@@ -571,6 +681,350 @@ impl CanarySession {
         }
 
         Ok(generated)
+    }
+
+    fn run_decoder_beam(
+        &mut self,
+        encoded: &Array3<f32>,
+        source_lang: &str,
+        target_lang: &str,
+        initial_processor: &dyn BeamLogitsProcessor,
+        beam_width: usize,
+    ) -> Result<Vec<(usize, f32)>> {
+        let beam_width = beam_width.max(1);
+        let max_length = 512_usize;
+        let session_cfg = &self.model.config.session;
+        let _vocab_len = self.model.vocab.len();
+
+        let bos_id = self
+            .model
+            .token_to_id
+            .get("<|startoftranscript|>")
+            .or_else(|| self.model.token_to_id.get("<s>"))
+            .copied()
+            .unwrap_or(0);
+        let eos_id = self
+            .model
+            .token_to_id
+            .get("<|endoftext|>")
+            .or_else(|| self.model.token_to_id.get("</s>"))
+            .copied()
+            .unwrap_or(1);
+
+        // Build prompt tokens (same logic as run_decoder).
+        let source_lang_token = format!("<|{}|>", source_lang);
+        let target_lang_token = format!("<|{}|>", target_lang);
+        let mut prompt_tokens = vec![bos_id];
+        if let Some(&id) = self.model.token_to_id.get(&source_lang_token) {
+            prompt_tokens.push(id);
+        } else {
+            log::warn!(
+                "Source language token '{}' not found in vocabulary",
+                source_lang_token
+            );
+        }
+        if let Some(&id) = self.model.token_to_id.get(&target_lang_token) {
+            prompt_tokens.push(id);
+        } else {
+            log::warn!(
+                "Target language token '{}' not found in vocabulary",
+                target_lang_token
+            );
+        }
+        let pnc_token = if session_cfg.use_pnc {
+            "<|pnc|>"
+        } else {
+            "<|nopnc|>"
+        };
+        if let Some(&id) = self.model.token_to_id.get(pnc_token) {
+            prompt_tokens.push(id);
+        }
+        if let Some(use_itn) = session_cfg.use_itn {
+            let itn_token = if use_itn { "<|itn|>" } else { "<|noitn|>" };
+            if let Some(&id) = self.model.token_to_id.get(itn_token) {
+                prompt_tokens.push(id);
+            }
+        }
+        let ts_token = if session_cfg.use_timestamps {
+            "<|timestamp|>"
+        } else {
+            "<|notimestamp|>"
+        };
+        if let Some(&id) = self.model.token_to_id.get(ts_token) {
+            prompt_tokens.push(id);
+        }
+        let diarize_token = if session_cfg.use_diarize {
+            "<|diarize|>"
+        } else {
+            "<|nodiarize|>"
+        };
+        if let Some(&id) = self.model.token_to_id.get(diarize_token) {
+            prompt_tokens.push(id);
+        }
+        if prompt_tokens.is_empty() {
+            return Err(CanaryError::InferenceError(
+                "Prompt tokens are empty".into(),
+            ));
+        }
+
+        // Encoder tensors (shared by all beams).
+        let encoded_shape = encoded.shape();
+        let encoder_hidden = *encoded_shape.get(2).ok_or_else(|| {
+            CanaryError::InferenceError("Encoded tensor missing hidden dimension".into())
+        })?;
+        let encoded_vec: Vec<f32> = encoded.iter().copied().collect();
+        let encoded_tensor = Tensor::<f32>::from_array((
+            [encoded_shape[0], encoded_shape[1], encoded_shape[2]],
+            encoded_vec,
+        ))?;
+        let mask_tensor = if let (Some(mask_data), Some(mask_shape)) =
+            (&self.encoder_mask, &self.encoder_mask_shape)
+        {
+            Tensor::<i64>::from_array((mask_shape.as_slice(), mask_data.clone()))?
+        } else {
+            let mask_vec: Vec<i64> = vec![1; encoded_shape[0] * 1 * encoded_shape[2]];
+            Tensor::<i64>::from_array(([encoded_shape[0], 1, encoded_shape[2]], mask_vec))?
+        };
+
+        // Decoder dims.
+        let mut decoder = self.lock_decoder()?;
+        let (num_layers, hidden) = {
+            let mut num_layers = session_cfg.decoder_num_layers;
+            let mut hidden_opt = session_cfg.decoder_hidden_size;
+            if num_layers.is_none() || hidden_opt.is_none() {
+                if let Some(out) = decoder
+                    .outputs()
+                    .iter()
+                    .find(|o| o.name() == "decoder_hidden_states")
+                {
+                    if let ValueType::Tensor { shape, .. } = out.dtype() {
+                        if shape.len() == 4 && shape[0] > 0 && shape[3] > 0 {
+                            num_layers.get_or_insert(shape[0] as usize);
+                            hidden_opt.get_or_insert(shape[3] as usize);
+                        }
+                    }
+                }
+            }
+            if hidden_opt.is_none() {
+                hidden_opt = Some(encoder_hidden);
+            }
+            (
+                num_layers.unwrap_or(10),
+                hidden_opt.unwrap_or(encoder_hidden),
+            )
+        };
+
+        // Helpers (plain fns - cannot capture locals).
+        fn last_logits(outputs: &SessionOutputs<'_>) -> Result<Vec<f32>> {
+            let (shape, data) = outputs["logits"].try_extract_tensor::<f32>()?;
+            let dims = shape.as_ref();
+            if dims.len() != 3 {
+                return Err(CanaryError::InferenceError("Expected 3D logits".into()));
+            }
+            let t = dims[1] as usize;
+            let v = dims[2] as usize;
+            if t == 0 {
+                return Err(CanaryError::InferenceError("Empty logits".into()));
+            }
+            Ok(data[(t - 1) * v..t * v].to_vec())
+        }
+
+        fn pull_cache(outputs: &mut SessionOutputs<'_>) -> Result<(Vec<f32>, [usize; 4])> {
+            let val = outputs.remove("decoder_hidden_states").ok_or_else(|| {
+                CanaryError::InferenceError("Missing decoder_hidden_states".into())
+            })?;
+            let (shape, data) = val.try_extract_tensor::<f32>()?;
+            let s = shape.as_ref();
+            if s.len() != 4 {
+                return Err(CanaryError::InferenceError(format!(
+                    "Cache expected 4D, got {}D",
+                    s.len()
+                )));
+            }
+            Ok((
+                data.to_vec(),
+                [s[0] as usize, s[1] as usize, s[2] as usize, s[3] as usize],
+            ))
+        }
+
+        // Prompt step - shared initial state for all beams.
+        let prompt_ids: Vec<i64> = prompt_tokens.iter().map(|&x| x as i64).collect();
+        let prompt_tensor = Tensor::<i64>::from_array(([1, prompt_ids.len()], prompt_ids))?;
+        let empty_mems = {
+            let shape = Shape::new([num_layers as i64, 1, 0, hidden as i64]);
+            DynTensor::new(decoder.allocator(), TensorElementType::Float32, shape)?
+        };
+        let (init_logits, init_cache_data, init_cache_shape) = {
+            let mut outputs = decoder.run(ort::inputs![
+                "input_ids" => prompt_tensor,
+                "encoder_embeddings" => &encoded_tensor,
+                "encoder_mask" => &mask_tensor,
+                "decoder_mems" => empty_mems,
+            ])?;
+            let logits = last_logits(&outputs)?;
+            let (cache_data, cache_shape) = pull_cache(&mut outputs)?;
+            (logits, cache_data, cache_shape)
+        };
+
+        // Per-beam state.
+        struct Beam {
+            tokens: Vec<(usize, f32)>,
+            tokens_so_far: Vec<usize>,
+            log_prob: f64,
+            cache_data: Vec<f32>,
+            cache_shape: [usize; 4],
+            logits: Vec<f32>,
+            processor: Box<dyn BeamLogitsProcessor>,
+        }
+
+        let mut beams: Vec<Beam> = (0..beam_width)
+            .map(|_| Beam {
+                tokens: Vec::new(),
+                tokens_so_far: Vec::new(),
+                log_prob: 0.0,
+                cache_data: init_cache_data.clone(),
+                cache_shape: init_cache_shape,
+                logits: init_logits.clone(),
+                processor: initial_processor.clone_beam_state(),
+            })
+            .collect();
+
+        let mut finished: Vec<(Vec<(usize, f32)>, f64)> = Vec::new();
+
+        for _step in 0..max_length {
+            // Apply each beam's processor to its logits, collect scored candidates.
+            let mut candidates: Vec<(usize, usize, f64)> = Vec::new(); // (beam_idx, token, score)
+
+            for (bi, beam) in beams.iter_mut().enumerate() {
+                let mut masked = beam.logits.clone();
+                beam.processor.process(&mut masked, &beam.tokens_so_far);
+
+                let max_l = masked
+                    .iter()
+                    .copied()
+                    .filter(|x| x.is_finite())
+                    .fold(f32::NEG_INFINITY, f32::max);
+                if max_l.is_infinite() {
+                    continue;
+                }
+                let sum_exp: f64 = masked
+                    .iter()
+                    .map(|&x| {
+                        if x.is_finite() {
+                            ((x - max_l) as f64).exp()
+                        } else {
+                            0.0
+                        }
+                    })
+                    .sum();
+                let log_denom = sum_exp.ln();
+
+                for (token, &logit) in masked.iter().enumerate() {
+                    if !logit.is_finite() {
+                        continue;
+                    }
+                    let log_p = (logit - max_l) as f64 - log_denom;
+                    candidates.push((bi, token, beam.log_prob + log_p));
+                }
+            }
+
+            if candidates.is_empty() {
+                break;
+            }
+
+            // Keep the top `beam_width` candidates globally.
+            candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(Ordering::Equal));
+            candidates.truncate(beam_width);
+
+            // Expand each surviving candidate into a new beam.
+            let mut new_beams: Vec<Beam> = Vec::new();
+            for (parent_idx, token, score) in candidates {
+                let parent = &beams[parent_idx];
+
+                if token == eos_id {
+                    finished.push((parent.tokens.clone(), score));
+                    continue;
+                }
+
+                // Clone processor state (already advanced for tokens_so_far.last()).
+                let new_proc = parent.processor.clone_beam_state();
+
+                // Token probability from the parent's raw logits.
+                let raw = &parent.logits;
+                let max_raw = raw
+                    .iter()
+                    .copied()
+                    .filter(|x| x.is_finite())
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let sum_raw: f32 = raw
+                    .iter()
+                    .map(|&x| {
+                        if x.is_finite() {
+                            (x - max_raw).exp()
+                        } else {
+                            0.0
+                        }
+                    })
+                    .sum();
+                let prob = if token < raw.len() && raw[token].is_finite() {
+                    (raw[token] - max_raw).exp() / sum_raw
+                } else {
+                    0.0
+                };
+
+                // Run one decoder step.
+                let token_tensor = Tensor::<i64>::from_array(([1, 1], vec![token as i64]))?;
+                let cache_tensor =
+                    Tensor::<f32>::from_array((parent.cache_shape, parent.cache_data.clone()))?;
+                let mut step_out = decoder.run(ort::inputs![
+                    "input_ids" => token_tensor,
+                    "encoder_embeddings" => &encoded_tensor,
+                    "encoder_mask" => &mask_tensor,
+                    "decoder_mems" => cache_tensor,
+                ])?;
+                let new_logits = last_logits(&step_out)?;
+                let (new_cache_data, new_cache_shape) = pull_cache(&mut step_out)?;
+
+                let mut new_tokens = parent.tokens.clone();
+                new_tokens.push((token, prob));
+                let mut new_tokens_so_far = parent.tokens_so_far.clone();
+                new_tokens_so_far.push(token);
+
+                new_beams.push(Beam {
+                    tokens: new_tokens,
+                    tokens_so_far: new_tokens_so_far,
+                    log_prob: score,
+                    cache_data: new_cache_data,
+                    cache_shape: new_cache_shape,
+                    logits: new_logits,
+                    processor: new_proc,
+                });
+            }
+
+            if new_beams.is_empty() {
+                break;
+            }
+            beams = new_beams;
+        }
+
+        // Collect any active beams that reached max_length without EOS.
+        for beam in beams {
+            finished.push((beam.tokens, beam.log_prob));
+        }
+
+        if finished.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Length-normalised ranking (Google NMT penalty, α = 0.7).
+        finished.sort_by(|a, b| {
+            let lp = |n: usize| ((5.0_f64 + n as f64) / 6.0).powf(0.7);
+            let sa = a.1 / lp(a.0.len());
+            let sb = b.1 / lp(b.0.len());
+            sb.partial_cmp(&sa).unwrap_or(Ordering::Equal)
+        });
+
+        Ok(finished.remove(0).0)
     }
 
     fn decode_tokens(&self, token_results: &[(usize, f32)]) -> Result<CanaryResult> {

@@ -305,6 +305,16 @@ impl Canary {
         })
     }
 
+    /// Access the vocabulary (token ID → text).
+    pub fn vocab(&self) -> &[String] {
+        &self.vocab
+    }
+
+    /// Access the token-to-ID lookup map.
+    pub fn token_to_id(&self) -> &HashMap<String, usize> {
+        &self.token_to_id
+    }
+
     /// Create a new session with isolated per-run state.
     pub fn session(&self) -> CanarySession {
         CanarySession::new(self.clone())
