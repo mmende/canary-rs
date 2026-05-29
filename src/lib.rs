@@ -13,7 +13,7 @@ pub use ort::ep::coreml::{
 };
 pub use session::CanarySession;
 pub use stream::{CanaryStream, StreamChunk, StreamConfig};
-pub use types::{CanaryError, CanaryResult, Result, Token};
+pub use types::{BeamLogitsProcessor, CanaryError, CanaryResult, LogitsProcessor, Result, Token};
 
 #[cfg(test)]
 mod tests {

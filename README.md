@@ -11,7 +11,7 @@ Download [Canary-1b-v2](https://huggingface.co/istupakov/canary-1b-v2-onnx/tree/
 - `decoder-model.onnx`
 - `vocab.txt`
 
-or for int8 quantization:
+For int8 quantized models:
 
 - `encoder-model.int8.onnx`
 - `decoder-model.int8.onnx`
@@ -41,11 +41,34 @@ let mut stream = model.stream("en", "en", stream_cfg)?;
 // stream.push_samples(&audio_chunk, sample_rate, channels)?;
 ```
 
+**Note**: When using `canary-180m-flash` don't enable the `use_itn` option in `SessionConfig`, as this model doesn't seem to be trained with inverse text normalization and enabling it causes empty output.
+
 ## Features
 
 - `ort-defaults` (default): Enable ONNX Runtime default features.
 - Execution providers (🚧 Mostly untested): `cuda`, `tensorrt`, `coreml`, `directml`, `rocm`, `openvino`, `webgpu`, `nnapi`.
 - Dynamic loading: `load-dynamic`, `preload-dylibs` (see `ort` docs).
+
+## Examples
+
+See the `examples` directory for more usage examples, including live microphone streaming and audio file transcription, e.g.:
+
+```bash
+# Defaults to CPU as execution provider
+cargo run --example live
+```
+
+You can provide an environment variable called `CANARY_EXECUTION_PROVIDER` with the matching feature flag to select an execution provider. For example, to use CUDA:
+
+```bash
+CANARY_EXECUTION_PROVIDER=cuda CANARY_CUDA_DEVICE_ID=1 cargo run --example transcribe --features cuda
+```
+
+Or to use CoreML with Neural Engine + low precision:
+
+```bash
+CANARY_EXECUTION_PROVIDER=coreml CANARY_COREML_LOW_PRECISION=1 cargo run --example live --features coreml
+```
 
 ## Logging
 
@@ -54,7 +77,7 @@ your binary (for example, `env_logger` or `tracing-subscriber`) to see output.
 
 ## Notes
 
-Timestamps aren't working right now and are just dummy values because Canary doesn't emit timestamp tokens from the decoder. In the original NeMo implementation, timestamps are generated in a separate post-decode step using forced alignment with an auxiliary CTC model.
+Timestamps aren't working right now and are just dummy values. Canary doesn't emit timestamp tokens from the decoder, in the original NeMo implementation, timestamps are generated in a separate post-decode step using forced alignment with an auxiliary CTC model.
 
 ## License
 

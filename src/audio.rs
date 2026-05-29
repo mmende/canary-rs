@@ -40,8 +40,19 @@ pub fn load_audio_file<P: AsRef<Path>>(path: P) -> Result<(Vec<f32>, usize, usiz
             .map(|s| s.map(|s| s as f32 / 32768.0))
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| CanaryError::AudioError(format!("Failed to read samples: {}", e)))?,
+        (hound::SampleFormat::Int, bits) => {
+            let scale = (1u32 << (bits - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .map(|s| s.map(|s| s as f32 / scale))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| CanaryError::AudioError(format!("Failed to read samples: {}", e)))?
+        }
         _ => {
-            return Err(CanaryError::AudioError("Unsupported audio format".into()));
+            return Err(CanaryError::AudioError(format!(
+                "Unsupported audio format: {:?} {}-bit",
+                spec.sample_format, spec.bits_per_sample
+            )));
         }
     };
 

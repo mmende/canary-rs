@@ -37,8 +37,9 @@ pub struct SessionConfig {
     pub decoder_hidden_size: Option<usize>,
     /// Enable punctuation and capitalization tokens in the prompt.
     pub use_pnc: bool,
-    /// Enable inverse text normalization tokens in the prompt.
-    pub use_itn: bool,
+    /// Include an inverse text normalization token in the prompt.
+    /// `Some(true)` forces `<|itn|>`, `Some(false)` forces `<|noitn|>`, `None` omits the token.
+    pub use_itn: Option<bool>,
     /// Enable timestamp tokens in the prompt.
     pub use_timestamps: bool,
     /// Enable diarization tokens in the prompt.
@@ -54,7 +55,7 @@ impl Default for SessionConfig {
             decoder_num_layers: None,
             decoder_hidden_size: None,
             use_pnc: true,
-            use_itn: false,
+            use_itn: None,
             use_timestamps: false,
             use_diarize: false,
         }
@@ -69,6 +70,12 @@ impl SessionConfig {
     pub fn with_decoder_dims(mut self, num_layers: usize, hidden_size: usize) -> Self {
         self.decoder_num_layers = Some(num_layers);
         self.decoder_hidden_size = Some(hidden_size);
+        self
+    }
+
+    /// Set the ITN prompt token. `Some(true)` = `<|itn|>`, `Some(false)` = `<|noitn|>`, `None` = omit.
+    pub fn with_itn(mut self, itn: impl Into<Option<bool>>) -> Self {
+        self.use_itn = itn.into();
         self
     }
 }
@@ -107,6 +114,8 @@ pub struct ExecutionConfig {
     pub coreml_enable_subgraphs: bool,
     /// CoreML specialization strategy (e.g. FastPrediction).
     pub coreml_specialization_strategy: Option<ort::ep::coreml::SpecializationStrategy>,
+    /// CUDA/TensorRT device index (default: 0).
+    pub cuda_device_id: i32,
     /// Decoder/session runtime options.
     pub session: SessionConfig,
 }
@@ -129,6 +138,7 @@ impl ExecutionConfig {
             coreml_static_input_shapes: false,
             coreml_enable_subgraphs: false,
             coreml_specialization_strategy: None,
+            cuda_device_id: 0,
             session: SessionConfig::default(),
         }
     }
@@ -182,6 +192,11 @@ impl ExecutionConfig {
         strategy: ort::ep::coreml::SpecializationStrategy,
     ) -> Self {
         self.coreml_specialization_strategy = Some(strategy);
+        self
+    }
+
+    pub fn with_cuda_device_id(mut self, device_id: i32) -> Self {
+        self.cuda_device_id = device_id;
         self
     }
 
@@ -290,6 +305,16 @@ impl Canary {
         })
     }
 
+    /// Access the vocabulary (token ID → text).
+    pub fn vocab(&self) -> &[String] {
+        &self.vocab
+    }
+
+    /// Access the token-to-ID lookup map.
+    pub fn token_to_id(&self) -> &HashMap<String, usize> {
+        &self.token_to_id
+    }
+
     /// Create a new session with isolated per-run state.
     pub fn session(&self) -> CanarySession {
         CanarySession::new(self.clone())
@@ -387,7 +412,7 @@ impl Canary {
             let opt_level = if config.disable_ort_optimization {
                 GraphOptimizationLevel::Disable
             } else {
-                GraphOptimizationLevel::Level1
+                GraphOptimizationLevel::Level3
             };
 
             builder = builder
@@ -433,14 +458,7 @@ impl Canary {
         builder = execution::apply_execution_providers(builder, config)?;
         builder = Self::attach_external_initializers(builder, path, config)?;
 
-        let session = builder.commit_from_file(path)?;
-
-        // Note: In ort v2.0.0-rc.11, execution providers are configured differently
-        // For now, we'll use the default provider which is CPU
-        // CUDA and CoreML would need to be configured through environment variables
-        // or different API calls
-
-        Ok(session)
+        Ok(builder.commit_from_file(path)?)
     }
 
     fn attach_external_initializers(
